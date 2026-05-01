@@ -1,75 +1,42 @@
-/**
- * idempotencyModel.js — Persistence layer for idempotency keys.
- *
- * WHY idempotency keys?
- *   Networks are unreliable. A mobile client on a slow 4G connection may time
- *   out before receiving a 201 response, then retry — creating duplicate rows.
- *   Idempotency keys solve this: the client generates a unique key (UUID v4)
- *   per *logical* request and sends it in the `Idempotency-Key` header.  If we
- *   see the key again, we return the cached response without touching the DB.
- *
- * KEY EXPIRY:
- *   Keys expire after 24 hours.  After that window, the client should treat
- *   the original request as lost and generate a fresh key if they retry.
- *   This prevents unbounded table growth.
- */
+const mongoose = require('mongoose');
 
-const db = require('../db/database');
+const idempotencySchema = new mongoose.Schema({
+  key: { type: String, required: true, unique: true },
+  response: { type: String, required: true },
+  status_code: { type: Number, required: true },
+  created_at: { type: Date, default: Date.now, expires: 86400 } // MongoDB TTL index (24 hours)
+});
 
-const EXPIRY_HOURS = 24;
+const IdempotencyKey = mongoose.model('IdempotencyKey', idempotencySchema);
 
-const stmtGet = db.prepare(`
-  SELECT * FROM idempotency_keys
-  WHERE key = ?
-    AND created_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ? || ' hours')
-`);
-
-const stmtInsert = db.prepare(`
-  INSERT OR IGNORE INTO idempotency_keys (key, response, status_code)
-  VALUES (@key, @response, @status_code)
-`);
-
-const stmtCleanup = db.prepare(`
-  DELETE FROM idempotency_keys
-  WHERE created_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ? || ' hours')
-`);
-
-/**
- * findKey — Look up an unexpired idempotency key.
- * Returns null if the key doesn't exist or has expired.
- */
-function findKey(key) {
-  const expiryParam = `-${EXPIRY_HOURS}`;
-  const row = stmtGet.get(key, expiryParam);
-  if (!row) return null;
+async function findKey(key) {
+  const doc = await IdempotencyKey.findOne({ key });
+  if (!doc) return null;
   return {
-    response:    JSON.parse(row.response),
-    status_code: row.status_code,
+    response: JSON.parse(doc.response),
+    status_code: doc.status_code,
   };
 }
 
-/**
- * saveKey — Persist an idempotency key with its response payload.
- * INSERT OR IGNORE means a race between two simultaneous identical requests
- * will result in only one insertion (the second is silently dropped).
- */
-function saveKey(key, response, status_code) {
-  stmtInsert.run({
-    key,
-    response:    JSON.stringify(response),
-    status_code,
-  });
+async function saveKey(key, response, status_code) {
+  try {
+    const doc = new IdempotencyKey({
+      key,
+      response: JSON.stringify(response),
+      status_code,
+    });
+    await doc.save();
+  } catch (err) {
+    if (err.code === 11000) {
+      // Duplicate key error is fine, means another concurrent request saved it first
+    } else {
+      console.error('[idempotency] Failed to save key:', err.message);
+    }
+  }
 }
 
-/**
- * purgeExpiredKeys — Called on server startup and periodically to reclaim space.
- */
-function purgeExpiredKeys() {
-  const expiryParam = `-${EXPIRY_HOURS}`;
-  const { changes } = stmtCleanup.run(expiryParam);
-  if (changes > 0) {
-    console.log(`[idempotency] Purged ${changes} expired key(s).`);
-  }
+async function purgeExpiredKeys() {
+  // Mongoose TTL index automatically handles this in MongoDB, so no-op.
 }
 
 module.exports = { findKey, saveKey, purgeExpiredKeys };

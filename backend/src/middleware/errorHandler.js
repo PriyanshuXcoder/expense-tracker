@@ -30,6 +30,14 @@ function errorHandler(err, req, res, next) {
     });
   }
 
+  // Handle CORS errors specifically so they don't look like 500s
+  if (err.message && err.message.startsWith('CORS:')) {
+    return res.status(403).json({
+      success: false,
+      error:   err.message,
+    });
+  }
+
   // Generic 500 — never expose internal details to clients in production.
   const statusCode = err.statusCode || 500;
   const message    = statusCode < 500 ? err.message : 'An internal server error occurred.';
