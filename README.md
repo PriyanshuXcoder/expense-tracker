@@ -266,5 +266,6 @@ Network failures are retried up to 3 times with `500ms → 1000ms → 2000ms` de
 - [x] Parameterised SQL queries (no injection possible)
 - [x] UUIDs for IDs (not sequential integers)
 - [x] No sensitive data in error responses (production)
-#   e x p e n s e - t r a c k e r  
+#   e x p e n s e - t r a c k e r 
+ 
  
